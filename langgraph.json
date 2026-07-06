@@ -1,0 +1,8 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "quran_agent": "app.pipeline:get_graph"
+  },
+  "env": ".env",
+  "python_version": "3.11"
+}
