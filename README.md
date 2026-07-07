@@ -1,3 +1,8 @@
+
+
+https://github.com/user-attachments/assets/6021c852-1dca-426f-8b86-1d276f134542
+
+
 # 📖 Quran Companion — Arabic-Grounded RAG Agent
 
 A retrieval-augmented ReAct agent that answers questions about the Quran and Sahih al-Bukhari hadiths **using only retrieved, citable source text** — never from the model's own memory. Built with LangGraph, hybrid dense+sparse retrieval, and served via FastAPI with a themed chat frontend.
