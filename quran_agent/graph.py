@@ -1,7 +1,11 @@
 """LangGraph multi-agent pipeline:
 
-query enhancer -> 3 researchers in parallel (Quran / Hadith / Web, each with a grader)
--> synthesizer <-> reflector (revise, or research more) -> cited answer.
+query enhancer + router --research--> 3 researchers in parallel (Quran / Hadith / Web, each with a grader)
+                        |             -> synthesizer <-> reflector (revise, or research more) -> cited answer
+                        +--chat-----> general chat (answers from the conversation memory, no tools)
+
+The conversation (`messages`) is saved per thread by a checkpointer, so follow-ups and
+"summarize your last answer" work, and chats survive restarts.
 """
 import operator
 import re
@@ -23,10 +27,17 @@ from . import config
 ToolName = Literal["quran_search_tool", "hadith_search", "duck_duck_search"]
 
 
+def add_or_reset(left: list, right: list | None) -> list:
+    """Evidence accumulates within one question; a node returns None to clear it for the next question
+    (the checkpointer keeps the whole state between turns)."""
+    return [] if right is None else left + right
+
+
 class MainState(BaseModel):
     question: str                                        # enhanced question (the enhancer overwrites the user's text)
-    history: list[AnyMessage] = []                       # earlier chat turns (input only, used by the enhancer)
-    evidence: Annotated[list[dict], operator.add] = []   # merged from all researchers running in parallel
+    messages: Annotated[list[AnyMessage], add_messages] = []   # the conversation (saved by the checkpointer)
+    route: str = ""                                      # "research" or "chat" (set by the enhancer)
+    evidence: Annotated[list[dict], add_or_reset] = []   # merged from all researchers running in parallel
     answer: str = ""                                     # latest draft (inline [n] citations)
     sources: list[dict] = []                             # numbered sources the draft cites
     final_answer: str = ""                               # draft + references + disclaimer
@@ -53,6 +64,12 @@ class ResearcherOutput(BaseModel):
 # Prompts
 # ======================================================================
 class Enhancer(BaseModel):
+    route: Literal["research", "chat"] = Field(description=(
+        "'research' if answering needs the Quran, hadith or Islamic sources (verses, hadith, prophets, Islamic "
+        "teachings, rulings, worship, Islamic history). 'chat' for everything else: greetings, thanks, questions "
+        "about the assistant, general knowledge unrelated to Islam, or requests about the earlier conversation "
+        "that need no new sources (summarize / translate / shorten / explain your last answer)."
+    ))
     new_question: str = Field(description=(
         "The user's question rewritten as a clear, self-contained search question for the Quran, "
         "hadith, and web search tools. Fix spelling mistakes, colloquial or vague wording, and "
@@ -63,7 +80,14 @@ class Enhancer(BaseModel):
     ))
 
 
-ENHANCER_PROMPT = SystemMessage(content="""You are the Query Enhancer for a Quran and Hadith research assistant.
+ENHANCER_PROMPT = SystemMessage(content="""You are the Query Enhancer and router for a Quran and Hadith research assistant.
+First choose the route:
+- research: the question needs the Quran, hadith or Islamic sources -- even a follow-up like "what about his brother?"
+  after a question about a prophet.
+- chat: greetings, thanks, questions about you, general questions unrelated to Islam (e.g. coding, science, daily life),
+  or requests about the earlier conversation that need no new sources ("summarize that", "translate your answer").
+For chat, return the user's message as new_question (only resolve references); the rest of these rules are for research.
+
 Rewrite the user's question so it can be searched well. The SAME rewritten question is sent in parallel to three researchers:
 one searches the Arabic Quran, one searches Sahih al-Bukhari hadiths, and one searches the web (tafsir, context).
 Each researcher sees ONLY your rewritten question, not the original one.
@@ -142,6 +166,18 @@ Rules:
 
 DISCLAIMER = ("\n\n---\nThis is an AI-assisted retrieval tool, not a scholarly ruling. "
               "For religious guidance, please consult a qualified scholar.")
+
+
+CHAT_PROMPT = SystemMessage(content="""You are Quran Companion, a friendly assistant. Your main skill is researching the Quran and
+Sahih al-Bukhari with cited sources; that happens in a separate research mode. Right now you are in general chat mode.
+
+- Answer greetings, questions about yourself, general-knowledge questions, and requests about the earlier conversation
+  (summarize, translate, shorten, explain your previous answer) directly and helpfully.
+- Use the earlier conversation as memory: refer back to what the user said and to your previous answers.
+- When you restate a previous answer, keep its [n] citations; never invent new verses, hadiths or references.
+- Do not give religious rulings or quote verses/hadith from memory -- suggest asking it as a question so the research
+  mode can find cited sources.
+- Answer in the same language as the user. Be concise.""")
 
 
 class Reflection(BaseModel):
@@ -253,17 +289,26 @@ def build_references(answer: str, sources: list[dict]) -> str:
     return "\n\n## References\n" + "\n".join(lines)
 
 
-def _history_for_enhancer(history: list[AnyMessage]) -> list[AnyMessage]:
-    recent = history[-config.HISTORY_TURNS:]
-    # long answers only need their gist to resolve "he", "that story", ...
-    return [AIMessage(content=m.content[:800]) if isinstance(m, AIMessage) else m for m in recent]
+def recent_history(messages: list[AnyMessage], turns: int, answer_chars: int) -> list[AnyMessage]:
+    """The last `turns` messages before the current question, with long answers shortened
+    (and the stored sources dropped -- the models only need the text)."""
+    earlier = messages[:-1][-turns:]
+    return [AIMessage(content=m.content[:answer_chars]) if isinstance(m, AIMessage)
+            else HumanMessage(content=m.content) for m in earlier]
+
+
+def _turn_reset() -> dict:
+    """Per-question fields to clear at the start of every turn (the checkpointer keeps the old values)."""
+    return {"evidence": None, "answer": "", "sources": [], "final_answer": "", "decision": "",
+            "feedback": "", "follow_ups": [], "reflections": 0}
 
 
 # ======================================================================
 # Graph
 # ======================================================================
-def build_graph(models, tools: list):
-    """Compile the full pipeline for `models` (llm.Models: fast + smart fallback chains) and the three tools."""
+def build_graph(models, tools: list, checkpointer=None):
+    """Compile the full pipeline for `models` (llm.Models: fast + smart fallback chains) and the three tools.
+    With a `checkpointer`, invoke with config={"configurable": {"thread_id": ...}} to keep a conversation."""
     tools_by_name = {t.name: t for t in tools}
 
     # many small calls -> fast model; the answer and its review -> smart model (each falls back on limits)
@@ -272,14 +317,25 @@ def build_graph(models, tools: list):
     researcher_llms = {t.name: models.fast.with_tools([t]) for t in tools}   # each researcher sees ONLY its tool
     synthesizer_llm = models.smart.plain()
     reflector_llm = models.smart.structured(Reflection)
+    chat_llm = models.smart.plain()
 
-    # ---------- enhancer ----------
+    # ---------- enhancer + router ----------
     def enhancer_node(state: MainState) -> dict:
-        messages = [ENHANCER_PROMPT, *_history_for_enhancer(state.history), HumanMessage(content=state.question)]
-        return {"question": enhancer_llm.invoke(messages).new_question}
+        history = recent_history(state.messages, config.HISTORY_TURNS, answer_chars=800)
+        out = enhancer_llm.invoke([ENHANCER_PROMPT, *history, HumanMessage(content=state.question)])
+        return {"question": out.new_question, "route": out.route, **_turn_reset()}
 
-    def send_researchers(state: MainState):
+    def route_after_enhancer(state: MainState):
+        if state.route == "chat":
+            return "chat"
         return [Send("graph_researcher", {"question": state.question, "tool_name": t.name}) for t in tools]
+
+    # ---------- general chat (no tools, answers from the conversation memory) ----------
+    def chat_node(state: MainState) -> dict:
+        history = recent_history(state.messages, config.CHAT_HISTORY_TURNS, answer_chars=3000)
+        user_text = state.messages[-1].content if state.messages else state.question
+        answer = chat_llm.invoke([CHAT_PROMPT, *history, HumanMessage(content=user_text)]).content
+        return {"answer": answer, "final_answer": answer, "messages": [AIMessage(content=answer)]}
 
     # ---------- researcher sub-graph ----------
     def researcher_agent_node(state: ResearcherState) -> dict:
@@ -353,7 +409,7 @@ def build_graph(models, tools: list):
     researcher.add_conditional_edges("searcher", researcher_route, {"tools": "tools", END: END})
     researcher.add_edge("tools", "grader")
     researcher.add_edge("grader", "searcher")
-    graph_researcher = researcher.compile()
+    graph_researcher = researcher.compile(checkpointer=False)   # scratch work: not saved to the conversation memory
 
     # ---------- synthesizer + reflector ----------
     def synthesizer_node(state: MainState) -> dict:
@@ -387,35 +443,47 @@ def build_graph(models, tools: list):
 
     def router_after_reflection(state: MainState):
         if state.decision == "accept" or state.reflections >= config.LOOP_MAX:
-            return END
+            return "finalize"
         if state.decision == "revise":
             return "synthesizer"
         if state.follow_ups:
             # every follow-up question goes to all 3 researchers (one per tool), in parallel
             return [Send("graph_researcher", {"question": q, "tool_name": t.name})
                     for q in state.follow_ups for t in tools]
-        return END
+        return "finalize"
+
+    def finalize_node(state: MainState) -> dict:
+        # only the accepted answer goes into the conversation memory (with its sources, for the UI)
+        return {"messages": [AIMessage(content=state.answer, additional_kwargs={"sources": state.sources})]}
 
     graph = StateGraph(MainState)
     graph.add_node("enhancer", enhancer_node)
+    graph.add_node("chat", chat_node)
     graph.add_node("graph_researcher", graph_researcher)
     graph.add_node("synthesizer", synthesizer_node)
     graph.add_node("reflector", reflector_node)
+    graph.add_node("finalize", finalize_node)
     graph.add_edge(START, "enhancer")
-    graph.add_conditional_edges("enhancer", send_researchers, ["graph_researcher"])
+    graph.add_conditional_edges("enhancer", route_after_enhancer, ["chat", "graph_researcher"])
+    graph.add_edge("chat", END)
     graph.add_edge("graph_researcher", "synthesizer")   # waits for all researchers
     graph.add_edge("synthesizer", "reflector")
-    graph.add_conditional_edges("reflector", router_after_reflection, ["synthesizer", "graph_researcher", END])
-    return graph.compile()
+    graph.add_conditional_edges("reflector", router_after_reflection, ["synthesizer", "graph_researcher", "finalize"])
+    graph.add_edge("finalize", END)
+    return graph.compile(checkpointer=checkpointer)
 
 
-def load_agent(stores=None, progress=None):
+def load_agent(stores=None, progress=None, checkpointer=None):
     """Embeddings + indexes + tools + LLMs -> compiled graph (build once and reuse).
-    `progress(stage, fraction, detail="")` is called as loading advances (fraction 0..1)."""
+    `progress(stage, fraction, detail="")` is called as loading advances (fraction 0..1).
+    `checkpointer`: conversation memory; defaults to the SQLite file in data/ (pass False to disable)."""
     from .data import _no_progress, load_stores
     from .llm import build_models
+    from .memory import get_checkpointer
     from .tools import build_tools
     progress = progress or _no_progress
     stores = stores or load_stores(progress=progress)
     progress("Compiling the agent", 0.97)
-    return build_graph(build_models(), build_tools(stores))
+    if checkpointer is None:
+        checkpointer = get_checkpointer()
+    return build_graph(build_models(), build_tools(stores), checkpointer=checkpointer or None)

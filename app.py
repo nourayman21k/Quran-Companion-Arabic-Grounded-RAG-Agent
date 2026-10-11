@@ -6,15 +6,17 @@ Run:  streamlit run server.py   (preloads the agent at server start)
 import os
 import re
 import time
+import uuid
 from collections import Counter
 
 import streamlit as st
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import HumanMessage
 
 from quran_agent import config
 from quran_agent.graph import DISCLAIMER, reference_label, strip_number
+from quran_agent.memory import delete_thread, list_threads, thread_messages, thread_title
 from quran_agent.stt import LANGUAGES
-from resources import get_agent, get_status, get_transcriber, retry_loading, start_loading
+from resources import get_agent, get_saver, get_status, get_transcriber, retry_loading, start_loading
 
 st.set_page_config(page_title="Quran companion", page_icon=":material/menu_book:")
 
@@ -49,13 +51,29 @@ def write_text(text: str, key: str):
         st.markdown(text)
 
 
-def chat_history() -> list:
-    """Earlier turns for the query enhancer (lets follow-ups like 'what about his brother?' work)."""
-    history = []
-    for msg in st.session_state.messages:
-        history.append(HumanMessage(content=msg["content"]) if msg["role"] == "user"
-                       else AIMessage(content=msg["content"]))
-    return history
+# ---------- conversations (saved by the LangGraph checkpointer in data/conversations.sqlite) ----------
+def new_conversation():
+    st.session_state.thread_id = uuid.uuid4().hex
+    st.session_state.messages = []
+
+
+def open_conversation(thread_id: str):
+    """Rebuild the chat view from the saved checkpoint of `thread_id`."""
+    st.session_state.thread_id = thread_id
+    st.session_state.messages = [
+        {"role": "user", "content": m.content} if m.type == "human"
+        else {"role": "assistant", "content": m.content, "sources": m.additional_kwargs.get("sources", [])}
+        for m in thread_messages(get_saver(), thread_id)
+    ]
+
+
+def delete_conversation(thread_id: str):
+    delete_thread(get_saver(), thread_id)
+    new_conversation()
+
+
+def thread_config() -> dict:
+    return {"configurable": {"thread_id": st.session_state.thread_id}}
 
 
 def render_trace(trace: list[dict]):
@@ -81,14 +99,25 @@ def render_assistant(msg: dict, key: str):
         with st.expander(msg.get("trace_label", "Research steps"), type="compact"):
             render_trace(msg["trace"])
     write_text(msg["content"], key=key)
-    render_sources(msg.get("sources", []), key=key)
-    st.caption(DISCLAIMER.replace("---", "").strip())
+    render_footer(msg.get("sources", []), key=key)
+
+
+def render_footer(sources: list[dict], key: str):
+    """Research answers get their sources + the religious disclaimer; general chat gets neither."""
+    if sources:
+        render_sources(sources, key=key)
+        st.caption(DISCLAIMER.replace("---", "").strip())
 
 
 def describe(node: str, update: dict) -> dict | None:
-    """Main-graph updates (enhancer, synthesizer, reflector) -> timeline steps."""
+    """Main-graph updates (enhancer, chat, synthesizer, reflector) -> timeline steps."""
     if node == "enhancer":
+        if update.get("route") == "chat":
+            return {"label": "General question: answering from the conversation", "detail": ""}
         return {"label": "Rewrote the question for search", "detail": update["question"]}
+
+    if node == "chat":
+        return {"label": "Answered directly (general chat, no search)", "detail": ""}
 
     if node == "synthesizer":
         return {"label": "Wrote the answer", "detail": f"From {len(update.get('sources', []))} numbered sources"}
@@ -119,12 +148,14 @@ def describe_event(event: dict) -> dict | None:
     return None
 
 
-def run_agent(question: str, history: list) -> tuple[dict, list[dict]]:
-    """Run the graph, streaming each step into the research timeline. Returns (final state, trace)."""
+def run_agent(question: str) -> tuple[dict, list[dict]]:
+    """Run one turn of the current conversation, streaming each step into the timeline.
+    The checkpointer adds it to the saved conversation memory. Returns (final state, trace)."""
     agent = get_agent()
     final, trace = {}, []
     for namespace, mode, data in agent.stream(
-        {"question": question, "history": history},
+        {"question": question, "messages": [HumanMessage(content=question)]},
+        thread_config(),
         stream_mode=["updates", "values", "custom"],
         subgraphs=True,
     ):
@@ -145,11 +176,25 @@ def run_agent(question: str, history: list) -> tuple[dict, list[dict]]:
 
 
 # ---------- state ----------
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+if "thread_id" not in st.session_state:
+    new_conversation()
 
 # ---------- sidebar ----------
 with st.sidebar:
+    st.button("New conversation", icon=":material/add_comment:", width="stretch", on_click=new_conversation)
+
+    saved = [t for t in list_threads(get_saver(), limit=15)]
+    if saved:
+        st.subheader("Conversations")
+        for tid in saved:
+            st.button(thread_title(get_saver(), tid), key=f"thread-{tid}", icon=":material/chat_bubble:",
+                      type="primary" if tid == st.session_state.thread_id else "tertiary",
+                      width="stretch", on_click=open_conversation, args=(tid,))
+        if st.session_state.thread_id in saved:
+            st.button("Delete this conversation", icon=":material/delete:", type="tertiary",
+                      on_click=delete_conversation, args=(st.session_state.thread_id,))
+
+    st.divider()
     st.header("Settings")
     voice_language = st.segmented_control(
         "Voice language", list(LANGUAGES), default="Auto-detect", key="voice_language",
@@ -157,15 +202,13 @@ with st.sidebar:
     )
     show_steps = st.toggle("Show research steps", value=True, key="show_steps",
                            help="Open the step-by-step research timeline while the agent works.")
-    if st.button("New conversation", icon=":material/add_comment:", width="stretch"):
-        st.session_state.messages = []
-        st.rerun()
 
     st.divider()
     st.caption(
-        "A query enhancer rewrites your question, three researchers search the **Quran**, "
-        "**Sahih al-Bukhari** and the **web** in parallel, a grader filters every result, "
-        "and a reflector checks the cited answer before you see it."
+        "Religious questions go to research mode: a query enhancer rewrites them, three researchers search the "
+        "**Quran**, **Sahih al-Bukhari** and the **web** in parallel, a grader filters every result, and a "
+        "reflector checks the cited answer. Everything else (greetings, general questions, \"summarize that\") "
+        "is answered directly from the saved conversation memory."
     )
     if config.LLM_PROVIDER == "ollama":
         st.caption(f"LLM: `{config.OLLAMA_MODEL}` (local Ollama) · speech-to-text: `{config.WHISPER_MODEL}` (Groq)")
@@ -176,7 +219,7 @@ with st.sidebar:
 # ---------- header ----------
 st.title("Quran companion")
 st.caption("Ask about the Quran and Sahih al-Bukhari by text or voice, in Arabic or English. "
-           "Every answer is grounded in cited verses, hadiths and sources.")
+           "Religious answers are grounded in cited verses, hadiths and sources; general questions are answered directly.")
 
 # right-to-left layout for Arabic text blocks (containers keyed rtl-*)
 st.html("<style>[class*='st-key-rtl-'] { direction: rtl; text-align: right; }</style>")
@@ -244,7 +287,6 @@ if prompt:
 
 if question or audio_bytes:
     turn = len(st.session_state.messages)
-    history = chat_history()
 
     # --- user turn (voice -> Whisper large-v3 on Groq -> text) ---
     with st.chat_message("user"):
@@ -272,15 +314,17 @@ if question or audio_bytes:
     with st.chat_message("assistant"):
         start = time.time()
         try:
-            with st.status(":shimmer[Researching the Quran, hadith and the web]",
-                           type="compact", expanded=show_steps) as status:
-                final, trace = run_agent(question, history)
+            with st.status(":shimmer[Thinking]", type="compact", expanded=show_steps) as status:
+                final, trace = run_agent(question)
                 elapsed = time.time() - start
-                counts = Counter(e["tool"] for e in final.get("evidence", []))
-                trace_label = (f"Researched for {elapsed:.0f}s · "
-                               + ", ".join(f"{TOOL_LABELS[t]}: {n}" for t, n in counts.items()))
+                if final.get("route") == "chat":
+                    trace_label = f"Answered from the conversation in {elapsed:.0f}s"
+                else:
+                    counts = Counter(e["tool"] for e in final.get("evidence", []))
+                    trace_label = (f"Researched for {elapsed:.0f}s · "
+                                   + ", ".join(f"{TOOL_LABELS[t]}: {n}" for t, n in counts.items()))
                 status.update(label=trace_label, state="complete", expanded=False)
-        except Exception as e:   # e.g. Groq rate limit still exceeded after all retries
+        except Exception as e:   # e.g. every model in the fallback chain is rate-limited
             st.error(f"The agent failed: {e}", icon=":material/error:")
             st.session_state.messages.pop()
             st.stop()
@@ -288,12 +332,11 @@ if question or audio_bytes:
         reply = {
             "role": "assistant",
             "content": final.get("answer") or "I couldn't find relevant sources for this question.",
-            "sources": final.get("sources", []),
+            "sources": final.get("sources", []) if final.get("route") != "chat" else [],
             "trace": trace,
             "trace_label": trace_label,
         }
         write_text(reply["content"], key=f"msg{turn + 1}")
-        render_sources(reply["sources"], key=f"msg{turn + 1}")
-        st.caption(DISCLAIMER.replace("---", "").strip())
+        render_footer(reply["sources"], key=f"msg{turn + 1}")
 
     st.session_state.messages.append(reply)

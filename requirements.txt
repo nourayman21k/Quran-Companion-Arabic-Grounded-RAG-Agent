@@ -1,6 +1,7 @@
 # torch is installed separately (CUDA build) -- see the Dockerfile / README
 streamlit>=1.65.0
 langgraph>=1.2.7
+langgraph-checkpoint-sqlite>=3.1.1   # saved conversation memory
 langchain-core>=1.4.8
 langchain-community>=0.4.2
 langchain-groq>=1.1.3

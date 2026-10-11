@@ -18,6 +18,7 @@ HADITH_JSON = {
     "ara": DATA_DIR / "hadith_bukhari_ara.json",   # original Arabic text of Sahih al-Bukhari
 }
 HADITH_API_URL = "https://cdn.jsdelivr.net/gh/fawazahmed0/hadith-api@1/editions"
+CHECKPOINT_DB = DATA_DIR / "conversations.sqlite"   # saved chat memory (LangGraph checkpointer)
 
 # --- models ---
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
@@ -49,6 +50,7 @@ SOURCE_CHARS = int(os.getenv("SOURCE_CHARS", 600))      # characters per source
 GRADER_CHARS = int(os.getenv("GRADER_CHARS", 600))      # characters of each result the grader sees
 RESEARCHER_CHARS = int(os.getenv("RESEARCHER_CHARS", 400))  # characters of each kept result the researcher sees
 HISTORY_TURNS = int(os.getenv("HISTORY_TURNS", 6))      # earlier chat messages the enhancer sees
+CHAT_HISTORY_TURNS = int(os.getenv("CHAT_HISTORY_TURNS", 12))   # earlier messages general chat sees
 
 # Groq SDK retries short per-minute waits itself; anything longer switches to the next model
 LLM_MAX_RETRIES = 2

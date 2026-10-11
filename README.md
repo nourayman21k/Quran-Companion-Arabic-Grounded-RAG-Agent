@@ -3,8 +3,9 @@
 Ask about the Quran and Sahih al-Bukhari **by text or by voice, in Arabic or English**. A team of LangGraph agents searches the Quran, the hadith collection and the web in parallel, filters every result, and answers only from what it found, with numbered citations (`surah:ayah`, hadith numbers, URLs).
 
 - **Multi-agent pipeline**: query enhancer → 3 parallel researchers (Quran / Hadith / Web), each with a relevance grader → synthesizer ⇄ reflector.
+- **General chat + memory**: non-religious questions (greetings, general knowledge, "summarize your last answer") are answered directly from the conversation. Every conversation is saved by a LangGraph SQLite checkpointer, so it survives restarts and can be reopened from the sidebar.
 - **Voice questions**: speech-to-text with **Whisper large-v3 on Groq** (same API key as the LLM).
-- **Streamlit chat UI**: live research timeline, right-to-left rendering for Arabic, expandable sources, follow-up questions.
+- **Streamlit chat UI**: live research timeline, right-to-left rendering for Arabic, expandable sources, follow-up questions, saved conversations.
 - **Docker**: one `docker compose up` with GPU support.
 
 > This is an AI-assisted retrieval tool, not a scholarly ruling. For religious guidance, please consult a qualified scholar.
@@ -15,7 +16,9 @@ Ask about the Quran and Sahih al-Bukhari **by text or by voice, in Arabic or Eng
 flowchart LR
     U([Question<br/>text or voice]) --> W[Whisper large-v3<br/>Groq speech-to-text]
     W --> E
-    U --> E[Query enhancer<br/>fix dialect, resolve follow-ups]
+    U --> E[Query enhancer + router<br/>fix dialect, resolve follow-ups]
+    M[(Conversation memory<br/>SQLite checkpointer)] -.-> E
+    E -- general question --> C[General chat<br/>answers from memory] --> A
     E --> RQ[Quran researcher]
     E --> RH[Hadith researcher]
     E --> RW[Web researcher]
@@ -33,7 +36,9 @@ flowchart LR
 
 | Step | What it does |
 |---|---|
-| **Query enhancer** | Rewrites the question into a clear, self-contained search question: fixes spelling and dialect (e.g. Egyptian Arabic "اللي بيعق ابوه وامه" → "عقوق الوالدين"), expands vague references, and uses the chat history to resolve follow-ups ("what about his brother?"). |
+| **Query enhancer + router** | Decides between **research** (needs the Quran, hadith or Islamic sources) and **chat** (everything else), all in the same call. For research it rewrites the question into a clear, self-contained search question: fixes spelling and dialect (e.g. Egyptian Arabic "اللي بيعق ابوه وامه" → "عقوق الوالدين"), expands vague references, and uses the conversation memory to resolve follow-ups ("what about his brother?"). |
+| **General chat** | Answers greetings, general-knowledge questions and requests about the conversation ("summarize your last answer", "translate it") directly, using the last `CHAT_HISTORY_TURNS` messages, with no searches, sources or disclaimer. |
+| **Memory** | The conversation (`messages`) is stored per conversation (`thread_id`) in `data/conversations.sqlite` by LangGraph's `SqliteSaver`. Per-question working state (evidence, drafts) is reset each turn; only the accepted answer (with its sources) is added to the memory. |
 | **Researchers** | Three copies of one research agent run in parallel, each owning exactly one tool. Each searches up to `MAX_ROUNDS` times, rewriting its query when the grader says something is missing. |
 | **Grader** | Checks every tool result against the question, keeps only relevant ones as evidence, and tells the researcher what is still missing. |
 | **Synthesizer** | Writes the answer from a capped, de-duplicated, numbered source list (round-robin across tools) with inline `[n]` citations; references are added automatically. |
@@ -97,7 +102,9 @@ Then open http://localhost:8501.
 
 - **Type** a question, or click one of the suggestions.
 - **Voice**: click the microphone in the chat box, speak, and send. You can also attach an audio file (wav / mp3 / m4a / flac / ogg / webm, up to 25 MB). Whisper large-v3 on Groq transcribes it, and the transcript is answered like a typed question. Set the voice language in the sidebar (auto-detect, Arabic or English).
-- **Follow-ups** work: the enhancer sees the recent conversation.
+- **General questions** ("hi", "what's 12 × 12?", "summarize your last answer", "translate that to English") are answered directly from the conversation, with no searching.
+- **Follow-ups** work in both modes: the agent remembers the conversation.
+- **Conversations are saved**: the sidebar lists past conversations (reopen or delete them), and they survive restarts. **New conversation** starts a fresh memory.
 - Open **Research steps** to see what each agent did, and **Sources** for the numbered passages behind the citations.
 
 ## Configuration
@@ -120,7 +127,8 @@ All settings live in [`quran_agent/config.py`](quran_agent/config.py) and can be
 | `MAX_ROUNDS` | `2` | Searches per researcher |
 | `MAX_SOURCES` / `SOURCE_CHARS` | `9` / `600` | Sources (and characters each) given to the synthesizer and reflector |
 | `LOOP_MAX` | `3` | Reflector reviews before the latest draft is returned |
-| `DATA_DIR` | `./data` | Where the indexes and hadith data live |
+| `HISTORY_TURNS` / `CHAT_HISTORY_TURNS` | `6` / `12` | Earlier messages the enhancer / general chat see |
+| `DATA_DIR` | `./data` | Where the indexes, hadith data and saved conversations (`conversations.sqlite`) live |
 
 The retrieval caps are small on purpose, to keep each request within the free tier's 8k tokens/minute. A question takes about 1-1.5 minutes. When a model's per-minute or daily quota runs out, its calls move to the next model in the fallback list instead of failing.
 
@@ -133,6 +141,7 @@ resources.py                shared, once-per-server resources (agent, transcribe
 quran_agent/
   config.py                 settings (env-overridable)
   llm.py                    per-role Groq models with automatic fallback (+ local Ollama)
+  memory.py                 SQLite checkpointer: saved conversations (data/conversations.sqlite)
   arabic.py                 Arabic normalization + Quran verse chunking
   data.py                   embeddings, FAISS indexes, hadith download/merge
   tools.py                  quran_search_tool, hadith_search, duck_duck_search

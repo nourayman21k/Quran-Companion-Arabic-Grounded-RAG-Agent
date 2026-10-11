@@ -15,6 +15,13 @@ def get_status() -> dict:
 
 
 @st.cache_resource(show_spinner=False)
+def get_saver():
+    """Conversation memory (SQLite checkpointer in data/), shared by the agent and the sidebar."""
+    from quran_agent.memory import get_checkpointer
+    return get_checkpointer()
+
+
+@st.cache_resource(show_spinner=False)
 def get_agent():
     from quran_agent.graph import load_agent
 
@@ -24,7 +31,7 @@ def get_agent():
         status.update(stage=stage, fraction=fraction, detail=detail)
 
     try:
-        agent = load_agent(progress=report)
+        agent = load_agent(progress=report, checkpointer=get_saver())
     except Exception as e:
         status["error"] = f"{type(e).__name__}: {e}"
         raise
