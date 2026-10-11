@@ -1,0 +1,65 @@
+{
+  "judge": "qwen3:14b",
+  "scores": [
+    {
+      "question": "ماذا يقول القرآن والسنة عن بر الوالدين؟",
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.7784,
+      "context_precision": 1.0
+    },
+    {
+      "question": "What is the story of Musa and the cow in Surah Al-Baqarah?",
+      "faithfulness": 0.8,
+      "answer_relevancy": 0.9796,
+      "context_precision": 0.5429
+    },
+    {
+      "question": "ما فضل الصبر في القرآن؟",
+      "faithfulness": 0.8571,
+      "answer_relevancy": 0.8236,
+      "context_precision": 1.0
+    },
+    {
+      "question": "What did the Prophet say about intentions and actions?",
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.8679,
+      "context_precision": 1.0
+    },
+    {
+      "question": "هو ربنا قال ايه عن اللي بيكدب؟",
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.5305,
+      "context_precision": 1.0
+    },
+    {
+      "question": "What does the Quran say about treating orphans?",
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.9888,
+      "context_precision": 0.9683
+    },
+    {
+      "question": "ما هي قصة أصحاب الكهف؟",
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.0,
+      "context_precision": 0.6083
+    },
+    {
+      "question": "What does Sahih al-Bukhari say about being kind to neighbors?",
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.8815,
+      "context_precision": 1.0
+    },
+    {
+      "question": "ما حكم الربا في القرآن؟",
+      "faithfulness": 0.9167,
+      "answer_relevancy": 0.8895,
+      "context_precision": 0.5
+    },
+    {
+      "question": "Who was Prophet Yusuf and how did his brothers treat him?",
+      "faithfulness": 0.1111,
+      "answer_relevancy": 0.8618,
+      "context_precision": 0.0
+    }
+  ]
+}

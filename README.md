@@ -7,6 +7,7 @@ Ask about the Quran and Sahih al-Bukhari **by text or by voice, in Arabic or Eng
 - **Voice questions**: speech-to-text with **Whisper large-v3 on Groq** (same API key as the LLM).
 - **Streamlit chat UI**: live research timeline, right-to-left rendering for Arabic, expandable sources, follow-up questions, saved conversations.
 - **Docker**: one `docker compose up` with GPU support.
+- **Evaluated with Ragas**: faithfulness 0.87, answer relevancy 0.76, context precision 0.76, 100% citation validity and 100% routing accuracy on a bilingual benchmark ([details](#evaluation)).
 
 > This is an AI-assisted retrieval tool, not a scholarly ruling. For religious guidance, please consult a qualified scholar.
 
@@ -132,6 +133,35 @@ All settings live in [`quran_agent/config.py`](quran_agent/config.py) and can be
 
 The retrieval caps are small on purpose, to keep each request within the free tier's 8k tokens/minute. A question takes about 1-1.5 minutes. When a model's per-minute or daily quota runs out, its calls move to the next model in the fallback list instead of failing.
 
+## Evaluation
+
+[`eval/run_eval.py`](eval/run_eval.py) runs a benchmark of 10 research questions (Arabic, English and Egyptian dialect) through the full pipeline, scores the answers with [Ragas](https://docs.ragas.io), and checks the router on 30 labeled messages (15 research, 15 general chat). Ragas uses a local judge (`qwen3:14b` via Ollama), so scoring doesn't spend the Groq quota.
+
+| Ragas metric | Mean | Median |
+|---|---|---|
+| Faithfulness (answer claims supported by the retrieved sources) | 0.87 | 1.00 |
+| Answer relevancy | 0.76 | 0.86 |
+| Context precision (retrieved sources useful for the answer) | 0.76 | 0.98 |
+
+| Pipeline metric | Value |
+|---|---|
+| Research questions answered | 10/10 |
+| Citations pointing to a real retrieved source | 107/107 (100%) |
+| Router accuracy (research vs. general chat) | 30/30 (100%) |
+| Sources / inline citations per answer (mean) | 7.6 / 10.7 |
+| Median latency per research question (Groq free tier) | 82 s |
+
+This is a small benchmark scored by a 14B judge, so treat the scores as indicative. The two lowest scores look like judge errors: an English answer checked against Arabic Quran passages, and an on-topic answer flagged as evasive. Hadith sources made it into 4 of the 10 answers, because the grader often discards weak hadith matches. Full per-question results are in [`eval/RESULTS.md`](eval/RESULTS.md), [`eval/ragas_scores.json`](eval/ragas_scores.json) and [`eval/agent_outputs.json`](eval/agent_outputs.json).
+
+To reproduce (Ragas 0.4.3 needs `--no-deps` on Python 3.14, because `scikit-network` has no wheel there):
+
+```bash
+pip install --no-deps ragas==0.4.3
+pip install "datasets>=4,<5" tiktoken nest-asyncio appdirs diskcache typer rich openai instructor networkx langchain langchain-openai
+ollama pull qwen3:14b
+python eval/run_eval.py                 # or --stage agent | ragas | report
+```
+
 ## Project structure
 
 ```
@@ -148,6 +178,7 @@ quran_agent/
   graph.py                  LangGraph agents: enhancer, researchers + grader, synthesizer, reflector
   stt.py                    Whisper large-v3 transcription (Groq API)
 scripts/build_indexes.py    builds data/ artifacts
+eval/                       Ragas + routing benchmark (run_eval.py, questions.json, RESULTS.md, raw scores)
 data/Quran_RAG_Ready.csv    Quran source text (indexes are generated, not committed)
 new_quran_rag.ipynb         development notebook the pipeline was built in
 Dockerfile, docker-compose.yml, docker-entrypoint.sh
