@@ -5,15 +5,17 @@ build/
 dist/
 wheels/
 *.egg-info
+.ipynb_checkpoints/
 
 # Virtual environments
 .venv
 
 # Secrets
 .env
+.streamlit/secrets.toml
 
-# Large local data/artifacts and langgraph runtime state
-data/
+# Data: built by scripts/build_indexes.py (only the source CSV is committed)
+data/*
+!data/Quran_RAG_Ready.csv
 *.pkl
 *.faiss
-.langgraph_api/

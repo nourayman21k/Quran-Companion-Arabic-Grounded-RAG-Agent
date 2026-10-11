@@ -1,0 +1,25 @@
+services:
+  quran-companion:
+    build: .
+    image: quran-companion:latest
+    ports:
+      - "8501:8501"
+    env_file: .env                     # GROQ_API_KEY=...
+    environment:
+      OLLAMA_BASE_URL: http://host.docker.internal:11434   # local fallback model on the host (optional)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data               # FAISS indexes + hadith JSON (built on first start if missing)
+      - hf-cache:/root/.cache/huggingface   # bge-m3 embedding model (~2.3 GB), downloaded once
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  hf-cache:

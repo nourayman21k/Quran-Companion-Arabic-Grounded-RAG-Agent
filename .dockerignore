@@ -1,9 +1,13 @@
-__pycache__
-*.pyc
-.env
-.venv
 .git
 .gitignore
+.venv
+.env
+data/
+__pycache__/
+*.pyc
 *.ipynb
 .ipynb_checkpoints
+*.pkl
+*.faiss
 README.md
+docker-compose.yml

@@ -1,0 +1,18 @@
+[server]
+maxUploadSize = 25          # MB, for audio files
+fileWatcherType = "none"    # avoids slow scans of torch/transformers internals
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "light"
+primaryColor = "#1F6F54"                 # deep green
+backgroundColor = "#FBFAF6"              # warm paper
+secondaryBackgroundColor = "#F1EDE2"
+textColor = "#1E2A26"
+linkColor = "#9A7B2F"                    # muted gold
+borderColor = "#E2DCCB"
+baseRadius = "0.6rem"
+font = "'IBM Plex Sans Arabic':https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&display=swap"
+headingFont = "'Amiri':https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&display=swap"

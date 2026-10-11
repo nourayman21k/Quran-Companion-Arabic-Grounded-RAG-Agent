@@ -1,182 +1,145 @@
+# Quran Companion: an Arabic-grounded research agent
 
+Ask about the Quran and Sahih al-Bukhari **by text or by voice, in Arabic or English**. A team of LangGraph agents searches the Quran, the hadith collection and the web in parallel, filters every result, and answers only from what it found, with numbered citations (`surah:ayah`, hadith numbers, URLs).
 
-https://github.com/user-attachments/assets/6021c852-1dca-426f-8b86-1d276f134542
+- **Multi-agent pipeline**: query enhancer → 3 parallel researchers (Quran / Hadith / Web), each with a relevance grader → synthesizer ⇄ reflector.
+- **Voice questions**: speech-to-text with **Whisper large-v3 on Groq** (same API key as the LLM).
+- **Streamlit chat UI**: live research timeline, right-to-left rendering for Arabic, expandable sources, follow-up questions.
+- **Docker**: one `docker compose up` with GPU support.
 
+> This is an AI-assisted retrieval tool, not a scholarly ruling. For religious guidance, please consult a qualified scholar.
 
-# 📖 Quran Companion — Arabic-Grounded RAG Agent
+## How it works
 
-A retrieval-augmented ReAct agent that answers questions about the Quran and Sahih al-Bukhari hadiths **using only retrieved, citable source text** — never from the model's own memory. Built with LangGraph, hybrid dense+sparse retrieval, and served via FastAPI with a themed chat frontend.
-
-> Every answer is grounded in a verse (`surah:ayah`) or hadith reference — not generated freely.
-
----
-
-## ✨ Key Features
-
-### 🕌 Grounded Quran & Hadith Retrieval
-- **Hybrid retrieval (dense + sparse)** — combines a FAISS vector index (`BAAI/bge-m3` embeddings) with a BM25 keyword retriever via an `EnsembleRetriever` (weighted 40% dense / 60% sparse) for robust matching across semantic and exact-term queries.
-- **Arabic-aware preprocessing** — a custom `normalize_arabic()` step strips diacritics (tashkeel), tatweel, and unifies letter variants (أ/إ/آ → ا, ى/ي → ي, etc.) so queries match text regardless of orthographic variation.
-- **Smart verse chunking** — a sliding-window chunker (5 ayahs, 1 overlap) groups verses per surah with proper `surah:ayah` reference tracking, then a de-duplication pass drops near-identical overlapping windows before reranking.
-- **LLM-based reranking** — retrieved candidates are re-ranked by a dedicated LLM call (`RERANK_MODEL`) against the original question before the top 5 are handed to the answer model.
-- **Hadith search tool** — keyword/fallback search over the Sahih al-Bukhari (English) collection, auto-downloaded and cached on first run.
-- **Answer prompt enforces citation discipline** — the agent is instructed to answer *only* from retrieved verses and cite `[surah:ayah]` for every claim, explicitly refusing to guess when context is insufficient.
-- **Automatic religious disclaimer** — any response that used `quran_search` or `hadith_search` gets an appended note clarifying this is an AI-assisted retrieval tool, not a scholarly ruling.
-
-### 🤖 Agentic Orchestration (LangGraph)
-- **ReAct-style tool-calling agent** built on `langgraph`, with a `StateGraph` that loops between an LLM node and a `ToolNode` until the model decides it has enough information to answer.
-- **Six tools available to the agent**:
-  | Tool | Purpose |
-  |---|---|
-  | `quran_search` | Hybrid-retrieval + reranked Quran verse search |
-  | `hadith_search` | Sahih al-Bukhari hadith lookup |
-  | `wikipedia` | General background/historical context |
-  | `arxiv` | Research paper lookup |
-  | `tavily_search` | Current events / general web search (primary) |
-  | `ddg_search` | Fallback web search if Tavily is unavailable |
-- **Strict system prompt guardrails** — the agent is instructed to never answer Quran- or hadith-related questions from its own knowledge without calling the relevant tool first.
-- **Per-thread conversational memory** via LangGraph's `MemorySaver` checkpointer — pass the same `thread_id` to continue a conversation (in-memory only; resets on restart).
-- **Automatic retry with backoff** — both the main agent LLM and the reranker LLM wrap calls in `with_retry(wait_exponential_jitter=True, stop_after_attempt=5)` to smooth over transient Groq rate limits/errors.
-
-### ⚡ Swappable, Fast LLMs via Groq
-- All three LLM roles (`AGENT_MODEL`, `RERANK_MODEL`, `ANSWER_MODEL`) are environment-configurable in `config.py` — swap models without touching pipeline code.
-- Runs on [Groq](https://groq.com)'s LPU inference for low-latency responses, with multilingual models (e.g. Qwen3) selected for strong Arabic comprehension.
-
-### 🚀 Production-Ready API & Ops
-- **FastAPI backend** with a single `/chat` endpoint (message in, cited answer + tool trace + thread ID out) and a `/health` check.
-- **Build-once startup** — the entire pipeline (embeddings, FAISS, BM25, hadith data, tool bindings, graph compilation) is built once at process startup and cached via `lru_cache`, not rebuilt per request.
-- **Pre-built artifact caching** — `chunks_cache.pkl`, FAISS index files, and `sparse_retriever_cache.pkl` let the container skip expensive CSV parsing/embedding/BM25-building on every start.
-- **Dockerized** — a slim `python:3.11` image that bakes in app code and pre-built `data/` artifacts for reproducible deployment.
-- **LangSmith tracing built in** — every agent run (tool calls, rerank step, final answer) is traced for debugging when `LANGCHAIN_TRACING_V2=true`.
-- **Tunable retrieval knobs** — `RETRIEVER_K`, `MAX_RERANK_CANDIDATES`, and `RERANK_TRUNCATE_CHARS` let you trade off recall, latency, and Groq token usage.
-
-### 💬 Themed Chat Frontend
-- Single-page, dependency-free HTML/CSS/JS chat UI (served as a static file by FastAPI) with:
-  - Arabic-inspired dark theme (gold/sage/slate accents, Amiri + Inter typefaces)
-  - Suggested starter prompts for empty state
-  - Visual tool-source badges (Quran verse / Hadith / other) on each response
-  - Persistent thread ID via `localStorage` so conversations survive page reloads
-  - Animated "thinking" indicator and graceful error states
-
----
-
-## 🏗️ Architecture
-
-```
-User query
-    │
-    ▼
-FastAPI /chat ──► LangGraph agent (tool_calling_llm ⇄ tools loop)
-                        │
-        ┌───────────────┼───────────────────────┬─────────────┐
-        ▼               ▼                       ▼             ▼
-  quran_search     hadith_search           wikipedia /     tavily_search /
-  (hybrid FAISS+   (Bukhari keyword         arxiv           ddg_search
-   BM25 + rerank)   search)                (context)        (current events)
-        │
-        ▼
-  Reranked, cited verses ──► Answer LLM ──► Final response (+ disclaimer if religious)
+```mermaid
+flowchart LR
+    U([Question<br/>text or voice]) --> W[Whisper large-v3<br/>Groq speech-to-text]
+    W --> E
+    U --> E[Query enhancer<br/>fix dialect, resolve follow-ups]
+    E --> RQ[Quran researcher]
+    E --> RH[Hadith researcher]
+    E --> RW[Web researcher]
+    RQ <--> GQ[Grader]
+    RH <--> GH[Grader]
+    RW <--> GW[Grader]
+    RQ --> S[Synthesizer<br/>cited answer]
+    RH --> S
+    RW --> S
+    S --> R{Reflector}
+    R -- revise --> S
+    R -- research more --> RQ & RH & RW
+    R -- accept --> A([Answer + references])
 ```
 
----
-
-## 📦 Project Structure
-
-```
-app/
-├── __init__.py
-├── config.py        # env vars, model choices, retrieval tuning
-├── main.py           # FastAPI app: /chat, /health, static frontend
-├── pipeline.py        # RAG build steps, tools, LangGraph agent
-└── static/
-    └── index.html     # chat frontend
-data/                  # pre-built artifacts (see setup below)
-Dockerfile
-langgraph.json
-requirements.txt / pyproject.toml
-RAG.ipynb              # original notebook the pipeline was built from
-```
-
----
-
-## 🛠️ Setup
-
-### 1. Populate `data/`
-Copy these into `data/` (built from `RAG.ipynb`):
-
-| File | Required? |
+| Step | What it does |
 |---|---|
-| `Quran_RAG_Ready.csv` | Only if `chunks_cache.pkl` doesn't exist yet |
-| `chunks_cache.pkl` | Recommended — skips CSV parsing/chunking on startup |
-| `index.faiss` + `index.pkl` | Required — the FAISS vector index |
-| `sparse_retriever_cache.pkl` | Recommended — skips rebuilding BM25 on startup |
-| `hadith_bukhari_eng.json` | Optional — auto-downloaded on first run if absent |
+| **Query enhancer** | Rewrites the question into a clear, self-contained search question: fixes spelling and dialect (e.g. Egyptian Arabic "اللي بيعق ابوه وامه" → "عقوق الوالدين"), expands vague references, and uses the chat history to resolve follow-ups ("what about his brother?"). |
+| **Researchers** | Three copies of one research agent run in parallel, each owning exactly one tool. Each searches up to `MAX_ROUNDS` times, rewriting its query when the grader says something is missing. |
+| **Grader** | Checks every tool result against the question, keeps only relevant ones as evidence, and tells the researcher what is still missing. |
+| **Synthesizer** | Writes the answer from a capped, de-duplicated, numbered source list (round-robin across tools) with inline `[n]` citations; references are added automatically. |
+| **Reflector** | Verifies every claim against its cited source. It accepts, sends the draft back for revision, or asks for more research with follow-up questions (up to `LOOP_MAX` reviews). |
 
-### 2. Configure environment
-```bash
-cp .env.example .env
-```
-Fill in:
-```
-GROQ_API_KEY=...
-TAVILY_API_KEY=...
-LANGCHAIN_API_KEY=...        # optional, for LangSmith tracing
-AGENT_MODEL=qwen/qwen3-32b
-RERANK_MODEL=openai/gpt-oss-20b
-ANSWER_MODEL=qwen/qwen3-32b
-```
+### Tools and data
 
-### 3. Run locally
-```bash
-pip install -r requirements.txt
-uvicorn app.main:app --reload
-```
-
-### 4. Run with Docker
-```bash
-docker build -t quran-rag-agent .
-docker run --env-file .env -p 8000:8000 quran-rag-agent
-```
-
-### 5. Call the API
-```bash
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "What does the Quran say about patience during hardship?"}'
-```
-```json
-{
-  "answer": "...",
-  "thread_id": "generated-or-provided-uuid",
-  "tool_calls": ["quran_search"]
-}
-```
-Pass the same `thread_id` back to continue the conversation.
-
----
-
-## ⚙️ Configuration Reference
-
-| Variable | Default | Purpose |
+| Tool | Source | Retrieval |
 |---|---|---|
-| `DATA_DIR` | `data` | Location of pre-built artifacts |
-| `GROQ_API_KEY` | — | Groq API key for all LLM calls |
-| `TAVILY_API_KEY` | — | Tavily web search API key |
-| `LANGCHAIN_TRACING_V2` | `true` | Toggle LangSmith tracing |
-| `AGENT_MODEL` | `qwen/qwen3-32b` | Main tool-calling agent model |
-| `RERANK_MODEL` | `openai/gpt-oss-20b` | Reranks retrieved verse candidates |
-| `ANSWER_MODEL` | `qwen/qwen3-32b` | Generates the final cited answer |
-| `RETRIEVER_K` | `8` | Top-k results per retriever (dense & sparse) |
-| `MAX_RERANK_CANDIDATES` | `12` | Max deduped candidates sent to reranker |
-| `RERANK_TRUNCATE_CHARS` | `200` | Chars per candidate shown to reranker |
+| `quran_search_tool` | Full Arabic Quran (114 surahs, 6,236 ayahs) in 5-ayah windows | `BAAI/bge-m3` + FAISS, Arabic normalization (diacritics, hamza and ya/ta-marbuta variants) |
+| `hadith_search` | Sahih al-Bukhari, Arabic + English ([hadith-api](https://github.com/fawazahmed0/hadith-api)) | `BAAI/bge-m3` + FAISS, one Arabic and one English document per hadith, so either language matches |
+| `duck_duck_search` | The web (tafsir, context, translations) | DuckDuckGo |
 
----
+### Models (all on [Groq](https://groq.com))
 
-## ⚠️ Notes & Limitations
-- `MemorySaver` is in-memory only — conversation history resets if the container restarts. Swap in a persistent LangGraph checkpointer (e.g. Postgres) for durable memory.
-- Watch Groq free-tier TPM limits under load — `RETRIEVER_K` and `MAX_RERANK_CANDIDATES` are your main levers if you hit 429s.
-- This tool provides AI-assisted retrieval, not scholarly rulings — always consult a qualified scholar for religious guidance.
+| Role | Model | Falls back to (on rate limit / error) |
+|---|---|---|
+| Enhancer, researchers, graders (many small calls) | `openai/gpt-oss-20b` | `qwen/qwen3.8-27b` → `openai/gpt-oss-120b` → local Ollama |
+| Synthesizer, reflector (the answer and its check) | `openai/gpt-oss-120b` | `qwen/qwen3.8-27b` → `openai/gpt-oss-20b` → local Ollama |
+| Speech-to-text | `whisper-large-v3` | — |
 
----
+Groq's free tier limits **each model separately** (8k tokens/min and 200k tokens/day per model). Splitting the work across models and falling back automatically means a used-up quota no longer stops the app. If [Ollama](https://ollama.com) is running with `qwen3:14b` pulled, it is added as the last, unlimited fallback.
 
-## 🧰 Tech Stack
-`FastAPI` · `LangGraph` · `LangChain` (+ `langchain-groq`, `langchain-huggingface`) · `Groq` (LPU inference) · `FAISS` · `BM25` (`rank-bm25`) · `sentence-transformers` (`BAAI/bge-m3`) · `Tavily` / `DuckDuckGo` / `Wikipedia` / `Arxiv` tools · `Docker` · `LangSmith`
+## Quick start (local)
+
+Requirements: Python 3.12+ and a [Groq API key](https://console.groq.com/keys). An NVIDIA GPU (≈2.5 GB VRAM) speeds up the `bge-m3` embeddings and the first index build, but everything also runs on CPU.
+
+```bash
+git clone https://github.com/nourayman21k/Quran-Companion-Arabic-Grounded-RAG-Agent.git
+cd Quran-Companion-Arabic-Grounded-RAG-Agent
+
+python -m venv .venv && source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install torch --index-url https://download.pytorch.org/whl/cu130   # or /whl/cpu
+pip install -r requirements.txt
+
+echo "GROQ_API_KEY=your-key" > .env
+
+python scripts/build_indexes.py     # first time only: builds data/ (~5 min on GPU, longer on CPU)
+streamlit run server.py             # http://localhost:8501
+```
+
+`server.py` starts loading the models and indexes as soon as the server boots, and the page shows a progress bar until they're ready (about 20 s; the very first start also downloads `bge-m3`, ≈2.3 GB). `streamlit run app.py` also works but starts loading only when the first visitor opens the page.
+
+`build_indexes.py` builds the Quran index from `data/Quran_RAG_Ready.csv`, downloads the Arabic and English Bukhari collections and builds the hadith index. It only builds what is missing (`--rebuild` forces a rebuild).
+
+## Run with Docker (GPU)
+
+Requirements: Docker Desktop (WSL 2 on Windows) or Docker Engine with the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html), and a `.env` file containing `GROQ_API_KEY=...`.
+
+```bash
+docker compose up --build
+```
+
+Then open http://localhost:8501.
+
+- `./data` is mounted into the container. On the first start, any missing index is built there and reused afterwards.
+- The `bge-m3` embedding model (≈2.3 GB) is cached in the `hf-cache` volume, so it downloads only once.
+- For a machine without a GPU, build a CPU image with `docker compose build --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu` and remove the `deploy:` block from `docker-compose.yml`.
+
+## Using the app
+
+- **Type** a question, or click one of the suggestions.
+- **Voice**: click the microphone in the chat box, speak, and send. You can also attach an audio file (wav / mp3 / m4a / flac / ogg / webm, up to 25 MB). Whisper large-v3 on Groq transcribes it, and the transcript is answered like a typed question. Set the voice language in the sidebar (auto-detect, Arabic or English).
+- **Follow-ups** work: the enhancer sees the recent conversation.
+- Open **Research steps** to see what each agent did, and **Sources** for the numbered passages behind the citations.
+
+## Configuration
+
+All settings live in [`quran_agent/config.py`](quran_agent/config.py) and can be overridden with environment variables (e.g. in `.env`):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `GROQ_API_KEY` | (required) | Groq API key |
+| `LLM_MODEL` | `openai/gpt-oss-120b` | Synthesizer + reflector model |
+| `FAST_LLM_MODEL` | `openai/gpt-oss-20b` | Enhancer, researcher and grader model |
+| `FALLBACK_LLM_MODELS` | `qwen/qwen3.8-27b,openai/gpt-oss-20b,openai/gpt-oss-120b` | Tried in order when a model hits its limit |
+| `REASONING_EFFORT` | `low` | gpt-oss hidden reasoning (counts toward the token limits) |
+| `OLLAMA_MODEL` / `OLLAMA_BASE_URL` | `qwen3:14b` / `http://localhost:11434` | Local last-resort fallback (used only if Ollama is running; `OLLAMA_MODEL=` disables it) |
+| `LLM_PROVIDER` | `groq` | Set to `ollama` to run every agent locally |
+| `WHISPER_MODEL` | `whisper-large-v3` | Groq speech-to-text model (`whisper-large-v3-turbo` is faster) |
+| `EMBEDDING_MODEL` | `BAAI/bge-m3` | Embeddings for both indexes |
+| `DEVICE` | `auto` | `cuda`, `cpu` or `auto` |
+| `QURAN_TOP_K` / `HADITH_TOP_K` / `WEB_TOP_K` | `3` | Results per search |
+| `MAX_ROUNDS` | `2` | Searches per researcher |
+| `MAX_SOURCES` / `SOURCE_CHARS` | `9` / `600` | Sources (and characters each) given to the synthesizer and reflector |
+| `LOOP_MAX` | `3` | Reflector reviews before the latest draft is returned |
+| `DATA_DIR` | `./data` | Where the indexes and hadith data live |
+
+The retrieval caps are small on purpose, to keep each request within the free tier's 8k tokens/minute. A question takes about 1-1.5 minutes. When a model's per-minute or daily quota runs out, its calls move to the next model in the fallback list instead of failing.
+
+## Project structure
+
+```
+server.py                   entry point: preloads the agent at server start
+app.py                      Streamlit chat UI (text + voice, loading progress)
+resources.py                shared, once-per-server resources (agent, transcriber, load status)
+quran_agent/
+  config.py                 settings (env-overridable)
+  llm.py                    per-role Groq models with automatic fallback (+ local Ollama)
+  arabic.py                 Arabic normalization + Quran verse chunking
+  data.py                   embeddings, FAISS indexes, hadith download/merge
+  tools.py                  quran_search_tool, hadith_search, duck_duck_search
+  graph.py                  LangGraph agents: enhancer, researchers + grader, synthesizer, reflector
+  stt.py                    Whisper large-v3 transcription (Groq API)
+scripts/build_indexes.py    builds data/ artifacts
+data/Quran_RAG_Ready.csv    Quran source text (indexes are generated, not committed)
+new_quran_rag.ipynb         development notebook the pipeline was built in
+Dockerfile, docker-compose.yml, docker-entrypoint.sh
+```

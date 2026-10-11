@@ -1,21 +1,28 @@
 [project]
-name = "project1-arabic"
-version = "0.1.0"
-description = "Add your description here"
+name = "quran-companion"
+version = "2.0.0"
+description = "Multi-agent Quran & Hadith research assistant (LangGraph + Groq) with a Streamlit chat UI and Whisper large-v3 (Groq) voice input"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 dependencies = [
-    "arxiv>=4.0.0",
-    "ddgs>=9.14.4",
-    "duckduckgo-search>=8.1.1",
-    "faiss-cpu>=1.14.3",
-    "langchain>=1.3.11",
+    "streamlit>=1.65.0",
+    "langgraph>=1.2.7",
+    "langchain-core>=1.4.8",
     "langchain-community>=0.4.2",
     "langchain-groq>=1.1.3",
+    "groq>=0.37.1",
+    "langchain-ollama>=1.1.0",
     "langchain-huggingface>=1.2.2",
-    "langgraph-cli[inmem]>=0.4.30",
-    "pyarabic>=0.6.15",
-    "rank-bm25>=0.2.2",
     "sentence-transformers>=5.6.0",
-    "wikipedia>=1.4.0",
+    "huggingface-hub>=1.22.0",
+    "faiss-cpu>=1.14.3",
+    "ddgs>=9.14.4",
+    "numpy>=2.5.1",
+    "pydantic>=2.13.4",
+    "python-dotenv>=1.2.2",
+    "requests>=2.33.1",
+    "torch>=2.12.1",
 ]
+
+[dependency-groups]
+dev = ["ipykernel", "langchain-ollama>=1.1.0"]
